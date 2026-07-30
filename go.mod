@@ -38,7 +38,7 @@ require (
 	github.com/imdario/mergo v0.3.16
 	github.com/jeremywohl/flatten/v2 v2.0.0-20211013061545-07e4a09fb8e4
 	github.com/kubevela/pkg v1.11.1-0.20260722232534-455842713731
-	github.com/kubevela/workflow v0.7.3-0.20260724135823-5e2a5c1ecb21
+	github.com/kubevela/workflow v0.7.3-0.20260723154608-3f6844b379de
 	github.com/kyokomi/emoji v2.2.4+incompatible
 	github.com/magiconair/properties v1.8.7
 	github.com/mattn/go-runewidth v0.0.15
