@@ -26,12 +26,15 @@ import (
 
 	"github.com/spf13/cobra"
 	"helm.sh/helm/v3/pkg/strvals"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/kubectl/pkg/util/i18n"
 	"k8s.io/kubectl/pkg/util/templates"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
 	velacmd "github.com/oam-dev/kubevela/pkg/cmd"
 	"github.com/oam-dev/kubevela/pkg/config"
@@ -513,15 +516,16 @@ func NewCreateConfigCommand(f velacmd.Factory, streams util.IOStreams) *cobra.Co
 				_, err = streams.Out.Write(outBuilder.Bytes())
 				return err
 			}
-			// the Config controller only materializes template.output, not outputs/expandedWriter
-			usesUnsupportedCRDFeatures := len(configItem.OutputObjects) > 0 || configItem.Template.ExpandedWriter.Nacos != nil
+			// the Config controller materializes template.output and template.outputs,
+			// but not the expandedWriter feature (e.g. Nacos)
+			usesUnsupportedCRDFeatures := configItem.Template.ExpandedWriter.Nacos != nil
 			if configCRDAvailable(f) && !usesUnsupportedCRDFeatures {
 				if err := createConfigCRD(cmd.Context(), f.Client(), options.Namespace, options.Name, name, namespace, configItem.Template.Sensitive, options.Properties, options.Alias, options.Description); err != nil {
 					return err
 				}
 			} else {
 				if configCRDAvailable(f) {
-					streams.Infof("the config template uses outputs or an expanded writer, which the Config CRD controller doesn't yet support; falling back to the legacy config storage\n")
+					streams.Infof("the config template uses an expanded writer, which the Config CRD controller doesn't yet support; falling back to the legacy config storage\n")
 				}
 				if err := inf.CreateOrUpdateConfig(context.Background(), configItem, options.Namespace); err != nil {
 					return err
@@ -551,6 +555,11 @@ func NewCreateConfigCommand(f velacmd.Factory, streams util.IOStreams) *cobra.Co
 				name := config.DefaultDistributionName(options.Name)
 				if err := inf.CreateOrUpdateDistribution(context.Background(), options.Namespace, name, ads); err != nil {
 					return err
+				}
+				if configCRDAvailable(f) {
+					if err := setDistributionOwner(cmd.Context(), f.Client(), options.Namespace, options.Name, name); err != nil {
+						return err
+					}
 				}
 			}
 			streams.Infof("the config %s applied successfully\n", options.Name)
@@ -639,6 +648,11 @@ func NewDistributeConfigCommand(f velacmd.Factory, streams util.IOStreams) *cobr
 			if err := inf.CreateOrUpdateDistribution(context.Background(), options.Namespace, name, ads); err != nil {
 				return err
 			}
+			if configCRDAvailable(f) {
+				if err := setDistributionOwner(cmd.Context(), f.Client(), options.Namespace, options.Config, name); err != nil {
+					return err
+				}
+			}
 			streams.Infof("the distribution %s applied successfully\n", name)
 			return nil
 		},
@@ -680,8 +694,21 @@ func NewDeleteConfigCommand(f velacmd.Factory, streams util.IOStreams) *cobra.Co
 				}
 			}
 
+			distributionName := config.DefaultDistributionName(options.Name)
 			if !options.NotRecall {
-				if err := inf.DeleteDistribution(context.Background(), options.Namespace, config.DefaultDistributionName(options.Name)); err != nil && !errors.Is(err, config.ErrNotFoundDistribution) {
+				if err := inf.DeleteDistribution(context.Background(), options.Namespace, distributionName); err != nil && !errors.Is(err, config.ErrNotFoundDistribution) {
+					return err
+				}
+			} else if configCRDAvailable(f) {
+				// a CRD-backed config's distribution Application is owned by the Config (see
+				// setDistributionOwner), so deleting the Config always recalls it - --not-recall
+				// can't be honored for these; fail rather than silently ignoring the flag.
+				switch err := f.Client().Get(context.Background(), client.ObjectKey{Namespace: options.Namespace, Name: distributionName}, &v1beta1.Application{}); {
+				case err == nil:
+					return fmt.Errorf("--not-recall is not supported for this config: its distribution %q is owned by the Config and will be recalled automatically when the Config is deleted; run \"vela config distribute %s --recall\" first if you want to keep the config without its distribution", distributionName, options.Name)
+				case apierrors.IsNotFound(err):
+					// no distribution to worry about
+				default:
 					return err
 				}
 			}
