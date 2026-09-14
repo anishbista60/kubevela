@@ -216,7 +216,7 @@ var _ = Describe("CRD-based config management (config.oam.dev/v1alpha1)", func()
 		Expect(string(secret.Data["username"])).Should(Equal("bob"))
 	})
 
-	It("Config with both spec.properties and spec.propertiesFrom transitions to Error phase", func() {
+	It("Config with both spec.properties and spec.propertiesFrom is rejected by the validating webhook", func() {
 		cfg := &configv1alpha1.Config{
 			ObjectMeta: metav1.ObjectMeta{Name: "cfg-bad", Namespace: namespace},
 			Spec: configv1alpha1.ConfigSpec{
@@ -226,16 +226,10 @@ var _ = Describe("CRD-based config management (config.oam.dev/v1alpha1)", func()
 				},
 			},
 		}
-		Expect(k8sClient.Create(ctx, cfg)).Should(Succeed())
-
-		Eventually(func() configv1alpha1.ConfigPhase {
-			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(cfg), cfg); err != nil {
-				return ""
-			}
-			return cfg.Status.Phase
-		}, configE2ETimeout, configE2EPollInterval).Should(Equal(configv1alpha1.ConfigPhaseError))
-
-		Expect(cfg.Status.GetCondition("Synced").Message).Should(ContainSubstring("mutually exclusive"))
+		err := k8sClient.Create(ctx, cfg)
+		Expect(err).Should(HaveOccurred())
+		Expect(apierrors.IsForbidden(err)).Should(BeTrue())
+		Expect(err.Error()).Should(ContainSubstring("mutually exclusive"))
 	})
 
 	It("Deleting a Config triggers GC of the owned Secret via ownerRef", func() {
